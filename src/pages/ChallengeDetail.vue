@@ -206,10 +206,7 @@
                             </p>
                           </template>
                           <template v-else>
-                            <p class="text-white-50 small mb-3">Ouvrez la page dans Chrome pour diffuser l'écran du challenge.</p>
-                            <button class="btn_primary w-100 py-3" @click="openInBrowserForScreenRecording">
-                              <i class="fas fa-external-link-alt me-2"></i>Ouvrir dans Chrome
-                            </button>
+                            <p class="text-white-50 small mb-3">Partage d'écran disponible dans l'app Android.</p>
                           </template>
                         </div>
 
@@ -536,10 +533,8 @@ const confirmingStop = ref(false);
 const cancellingStop = ref(false);
 
 const supportsDisplayMedia = typeof navigator.mediaDevices?.getDisplayMedia === "function";
-const useNativeScreenCapture =
-  typeof (window as any).Capacitor !== "undefined" &&
-  !supportsDisplayMedia &&
-  isNativeScreenCaptureAvailable();
+// Capture d'écran native dans l'app Android via ScreenCaptureService
+const useNativeScreenCapture = true;
 let nativeCaptureStop: (() => Promise<void>) | null = null;
 const isRecording = ref(false);
 const recordingError = ref("");

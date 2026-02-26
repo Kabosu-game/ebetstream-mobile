@@ -125,10 +125,7 @@
                           <i class="fas fa-desktop me-2"></i>Partage d'écran (natif)
                         </div>
                         <div v-else class="mb-3">
-                          <p class="text-white-50 small mb-3">Ouvrez la page dans Chrome pour diffuser l'écran.</p>
-                          <button type="button" class="btn_primary w-100 py-3" @click="openInBrowserForScreenShare">
-                            <i class="fas fa-external-link-alt me-2"></i>Ouvrir dans Chrome
-                          </button>
+                          <p class="text-white-50 small mb-3">Partage d'écran disponible dans l'app Android.</p>
                         </div>
                       </div>
 
@@ -260,7 +257,8 @@ const isAndroid = /Android/i.test(ua);
 const isCapacitor = typeof (window as any).Capacitor !== 'undefined';
 const isMobile = isCapacitor || isIOS || isAndroid;
 const supportsDisplayMedia = typeof (navigator.mediaDevices as any)?.getDisplayMedia === 'function';
-const useNativeScreenCapture = isCapacitor && !supportsDisplayMedia && isNativeScreenCaptureAvailable();
+// Capture d'écran native (MediaProjection) dans l'app Android via ScreenCaptureService
+const useNativeScreenCapture = true;
 
 // Arrêt de la capture native (MediaProjection) quand on stop le stream
 let nativeCaptureStop: (() => Promise<void>) | null = null;
@@ -430,7 +428,7 @@ const goLive = async () => {
   const safetyTimeout = setTimeout(() => {
     if (startingStream.value) {
       startingStream.value = false;
-      error.value = 'Délai dépassé. Réessayez ou ouvrez le site dans Chrome pour partager l\'écran.';
+      error.value = 'Délai dépassé. Réessayez dans quelques secondes.';
     }
   }, 25000);
 
@@ -484,7 +482,10 @@ const goLive = async () => {
   error.value = '⚙️ Résolution non supportée par cette caméra. Essayez l\'autre caméra.';
 } else {
   errorType.value = 'error';
-  error.value = err.response?.data?.message || err.message || 'Erreur au démarrage.';
+  const msg = err.response?.data?.message || err.message || 'Erreur au démarrage.';
+  error.value = useNativeScreenCapture && (msg.includes('Timeout') || msg.includes('stream') || msg.includes('Failed'))
+    ? 'Capture d\'écran indisponible. Fermez l\'app, réessayez ou redémarrez le téléphone.'
+    : msg;
 }
   } finally {
   startingStream.value = false;

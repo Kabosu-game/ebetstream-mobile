@@ -1,6 +1,6 @@
 /**
  * Capture d'écran native dans l'app (Android MediaProjection).
- * Expose un MediaStream à partir du flux MJPEG servi par le plugin.
+ * Expose un MediaStream à partir du flux servi par le plugin (endpoint /frame).
  */
 
 import { registerPlugin } from '@capacitor/core';
@@ -37,97 +37,72 @@ export async function requestNativeScreenPermission(): Promise<boolean> {
 }
 
 const MJPEG_FPS = 15;
+const FRAME_POLL_MS = Math.round(1000 / MJPEG_FPS);
 
 /**
  * Démarre la capture native et retourne un MediaStream + une fonction stop.
- * Utilise une image MJPEG + canvas.captureStream() (le WebView ne lit pas toujours MJPEG en <video>).
+ * Utilise GET /frame (une image JPEG par requête) + canvas.captureStream(),
+ * compatible avec tous les WebViews Android (pas de MJPEG multipart dans <img>).
  */
 export async function getNativeScreenStream(): Promise<{ stream: MediaStream; stop: () => Promise<void> }> {
   const plugin = getPlugin();
   if (!plugin) throw new Error('ScreenCapture plugin not available');
 
-  const { url } = await plugin.startStream();
-  if (!url) throw new Error('Failed to get stream URL');
+  let url: string;
+  try {
+    const result = await plugin.startStream();
+    url = result?.url ?? '';
+  } catch (e) {
+    throw new Error(typeof e === 'object' && e && 'message' in e ? String((e as Error).message) : 'Failed to start stream');
+  }
+  if (!url || typeof url !== 'string') throw new Error('Failed to get stream URL');
 
-  const img = document.createElement('img');
-  img.crossOrigin = 'anonymous';
-  img.style.position = 'fixed';
-  img.style.left = '-9999px';
-  img.style.visibility = 'hidden';
-  document.body.appendChild(img);
+  const baseUrl = url.replace(/\/+$/, '');
+  const frameUrl = `${baseUrl}/frame`;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext('2d');
+  if (!ctx || typeof canvas.captureStream !== 'function') {
+    throw new Error('Canvas stream not supported');
+  }
 
-  const streamUrl = url + (url.endsWith('/') ? '' : '/');
-  let streamRef: MediaStream | null = null;
-  let canvas: HTMLCanvasElement | null = null;
-  let ctx: CanvasRenderingContext2D | null = null;
-  let intervalId = 0;
+  const stream = canvas.captureStream(MJPEG_FPS);
+  let stopped = false;
+  let frameIntervalId: ReturnType<typeof setInterval> | null = null;
 
   const stop = async () => {
-    if (intervalId) clearInterval(intervalId);
-    if (streamRef) streamRef.getTracks().forEach((t) => t.stop());
-    streamRef = null;
-    img.src = '';
-    img.remove();
-    if (canvas?.parentNode) canvas.remove();
+    stopped = true;
+    if (frameIntervalId) clearInterval(frameIntervalId);
+    frameIntervalId = null;
+    stream.getTracks().forEach((t) => t.stop());
+    try {
+      if (canvas.parentNode) canvas.remove();
+    } catch (_) {}
     try {
       await plugin.stopStream();
     } catch (_) {}
   };
 
-  const tryCreateStream = (): boolean => {
-    if (streamRef) return true;
-    const w = img.naturalWidth || img.width || 1280;
-    const h = img.naturalHeight || img.height || 720;
-    if (w <= 0 || h <= 0) return false;
-    canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    ctx = canvas.getContext('2d');
-    if (!ctx || typeof canvas.captureStream !== 'function') return false;
-    const stream = canvas.captureStream(MJPEG_FPS);
-    streamRef = stream;
-    intervalId = window.setInterval(() => {
-      if (ctx && img.naturalWidth > 0) ctx.drawImage(img, 0, 0);
-    }, 1000 / MJPEG_FPS);
-    return true;
+  const drawNextFrame = async () => {
+    if (stopped) return;
+    try {
+      const res = await fetch(frameUrl, { cache: 'no-store' });
+      if (!res.ok || !res.body) return;
+      const blob = await res.blob();
+      if (blob.size === 0) return;
+      const bitmap = await createImageBitmap(blob);
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+    } catch (_) {}
   };
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      img.src = '';
-      img.remove();
-      reject(new Error('Timeout loading screen stream'));
-    }, 12000);
+  await drawNextFrame();
+  frameIntervalId = setInterval(drawNextFrame, FRAME_POLL_MS);
 
-    const done = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (streamRef) resolve({ stream: streamRef, stop });
-      else reject(new Error('Failed to create stream'));
-    };
-
-    img.onload = () => {
-      if (tryCreateStream()) done();
-    };
-
-    img.onerror = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      img.remove();
-      reject(new Error('Failed to load screen stream'));
-    };
-
-    img.src = streamUrl;
-
-    // WebView Android peut ne pas déclencher onload pour MJPEG multipart : après 1.5 s on essaie quand même
-    setTimeout(() => {
-      if (streamRef) return;
-      if (tryCreateStream()) done();
-    }, 1500);
-  });
+  return { stream, stop };
 }
