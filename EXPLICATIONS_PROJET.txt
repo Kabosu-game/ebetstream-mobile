@@ -1,0 +1,148 @@
+================================================================================
+  Ebetstream-mobile - Explications du projet et de son fonctionnement
+================================================================================
+
+1. QU'EST-CE QUE C'EST ?
+------------------------
+
+ebetstream-mobile est la version mobile native de l'application web ebetstream
+(paris sportifs, défis, streaming). C'est la même application (Vue 3) qui tourne
+dans une WebView sur Android (et éventuellement iOS) grâce à Capacitor.
+L'APK appelle l'API en production : https://acmpt.online/api.
+
+
+2. STRUCTURE DES DOSSIERS
+-------------------------
+
+ebetstream-mobile/
+|
++-- src/                          Code Vue (partagé avec la version web)
+|   +-- main.ts                   Point d'entrée : Vue, router, i18n, StatusBar (Capacitor)
+|   +-- App.vue                   Layout principal (MainLayout ou sans layout)
+|   +-- route.ts                  Routes Vue Router (Home, Streams, Challenges, etc.)
+|   +-- config/
+|   |   +-- constants.ts          API_URL, détection app native vs navigateur
+|   |   +-- api.ts                Réexport / config API
+|   |   +-- maintenance.ts        Mode maintenance
+|   +-- pages/                    Pages (StreamCreate, StreamView, Challenges, Home…)
+|   +-- components/               Composants réutilisables (Header, sections Home…)
+|   +-- Layouts/                  MainLayout, AdminLayout, etc.
+|   +-- utils/
+|   |   +-- axios.ts              Client HTTP (baseURL = API selon env)
+|   |   +-- peerConfig.ts         Config PeerJS pour WebRTC (streaming)
+|   |   +-- imageFixer.ts, imageHelper.ts
+|   +-- assets/                   SCSS, images, données
+|   +-- i18n/                     Traductions
+|
++-- android/                      Projet Android (Capacitor)
+|   +-- app/src/main/
+|   |   +-- AndroidManifest.xml   Permissions (INTERNET, CAMERA, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS)
+|   |   +-- java/.../MainActivity.java
+|   |   |                        Charge l'app + WebChromeClient personnalisé
+|   |   +-- java/.../MediaPermissionWebChromeClient.java
+|   |   |                        Grant caméra/micro au WebView
+|   |   +-- assets/public/        Copie de dist/ (app web compilée)
+|   +-- capacitor.build.gradle, settings…
+|
++-- dist/                         Build web (Vite) → copié dans android/assets par cap sync
++-- capacitor.config.ts           Config Capacitor (appId, webDir, server, plugins)
++-- package.json
++-- vite.config.ts                Build Vue (base: './'), proxy API en dev
++-- index.html
+
+
+3. STACK TECHNIQUE
+------------------
+
+Frontend    : Vue 3, TypeScript, Vite, Vue Router, Vue I18n
+UI          : Bootstrap 5, SCSS
+HTTP        : Axios (baseURL selon constants.ts)
+Streaming   : PeerJS, WebSocket (signaling), getUserMedia / getDisplayMedia (avec repli caméra)
+Native      : Capacitor 6 (Android, iOS), Status Bar, Camera plugin (permissions)
+Build       : npm run build → Vite ; npx cap sync android → copie dist/ dans Android
+
+
+4. COMMENT LE PROJET FONCTIONNE (FLUX GLOBAL)
+---------------------------------------------
+
+4.1 Développement
+  - On travaille dans src/ comme pour un site Vue.
+  - En dev : npm run dev (Vite, souvent port 5173), proxy vers l'API locale si besoin.
+  - L'app détecte si elle tourne en app native via window.Capacitor et choisit l'API (prod vs dev).
+
+4.2 Configuration API (src/config/constants.ts)
+  - Si Capacitor présent (app installée) → API = https://acmpt.online (prod).
+  - Sinon, si localhost / 127.0.0.1 → mode dev (proxy ou API locale).
+  - Axios utilise API_BASE_URL / API_URL définis là.
+
+4.3 Build pour mobile
+  - npm run build → génère dist/ (HTML, JS, CSS).
+  - npx cap sync android → copie dist/ dans android/app/src/main/assets/public et met à jour la config native.
+  - L'APK charge ensuite cette app web depuis les assets (schéma https défini dans capacitor.config.ts).
+
+4.4 Lancement sur Android
+  - MainActivity (Capacitor) charge la WebView.
+  - Notre MediaPermissionWebChromeClient remplace le client par défaut : quand la page appelle getUserMedia (caméra/micro), si l'app a déjà les permissions Android, on accorde tout de suite la demande au WebView (sinon on laisse le flux standard de demande de permissions).
+
+4.5 Streaming (Go Live, défis)
+  - StreamCreate : choix source = caméra arrière / avant (ou écran sur desktop) → getUserMedia (ou fallback caméra si pas getDisplayMedia) → envoi du flux vers l'API + WebSocket signaling + PeerJS pour les viewers.
+  - ChallengeDetail : enregistrement "écran" : si getDisplayMedia existe → partage d'écran ; sinon (mobile) → getUserMedia (caméra).
+  - Côté serveur, l'API (acmpt.online / ebetstreamvf) doit autoriser les origines CORS (dont l'app mobile) pour que les requêtes passent.
+
+
+5. CE QU'ON A FAIT (RÉSUMÉ DES CHANGEMENTS)
+-------------------------------------------
+
+5.1 Création du projet mobile
+  - Dossier ebetstream-mobile avec la même base que ebetstream (Vue, Vite, pages, composants).
+  - Intégration Capacitor (Android, iOS), capacitor.config.ts, webDir: 'dist', server.androidScheme: 'https', autorisations de navigation (acmpt.online, localhost).
+
+5.2 API et environnement
+  - constants.ts : en app native (window.Capacitor), utilisation systématique de https://acmpt.online (pas de localhost).
+  - axios : baseURL = cette API ; pages publiques (streams, challenges, etc.) définies pour ne pas bloquer la navigation.
+
+5.3 Streaming et médias sur mobile
+  - getDisplayMedia n'existe pas en WebView :
+    * StreamCreate : en mobile (ou si getDisplayMedia absent), on utilise toujours getUserMedia (caméra arrière/avant), jamais getDisplayMedia.
+    * ChallengeDetail : si getDisplayMedia absent → getUserMedia (caméra) pour l'enregistrement.
+  - Messages d'erreur adaptés : "Caméra et micro refusés" + lien vers Paramètres quand on est en mode caméra (mobile).
+
+5.4 Permissions Android
+  - AndroidManifest.xml :
+    * CAMERA, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS
+    * uses-feature camera / microphone (required=false).
+  - MediaPermissionWebChromeClient :
+    * Étend BridgeWebChromeClient.
+    * Dans onPermissionRequest : si l'app a déjà les permissions caméra + micro, on fait request.grant() tout de suite pour le WebView (évite le bug "tout est autorisé dans Paramètres mais l'app dit non").
+  - MainActivity : après super.load(), on attache ce client à la WebView :
+    webView.setWebChromeClient(new MediaPermissionWebChromeClient(bridge)).
+
+5.5 CORS (côté API)
+  - Sur ebetstreamvf (et ebetstream_api) : origines autorisées pour l'app mobile et le web :
+    * https://acmpt.online, https://www.acmpt.online, https://localhost, capacitor://localhost, null, patterns pour localhost/127.0.0.1.
+  - Pour que l'APK puisse appeler https://acmpt.online/api sans blocage CORS.
+
+5.6 UX / app native
+  - main.ts : si Capacitor présent, configuration de la StatusBar (style sombre, couleur #0a0a0f).
+  - index.html : viewport, theme-color, meta "web-app" pour un rendu type app sur mobile.
+
+
+6. COMMANDES UTILES
+-------------------
+
+Action          Commande
+------          --------
+Dev web         npm run dev
+Build web       npm run build
+Sync vers Android   npx cap sync android
+Ouvrir Android Studio  npx cap open android
+Build APK debug  cd android && .\gradlew assembleDebug
+Tout (build + sync + open)  npm run android
+
+
+7. RÉSUMÉ
+---------
+
+ebetstream-mobile est la même app Vue qu'ebetstream, livrée en app Android (et prête pour iOS) via Capacitor, avec une config API prod, des replis caméra au lieu de partage d'écran, et une gestion des permissions WebView (caméra/micro) pour que le streaming et l'enregistrement fonctionnent correctement sur téléphone.
+
+================================================================================
