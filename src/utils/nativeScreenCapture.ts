@@ -90,10 +90,10 @@ export async function getNativeScreenStream(): Promise<{
     stream.getTracks().forEach((t) => t.stop());
     try {
       if (canvas.parentNode) canvas.remove();
-    } catch (_) { }
+    } catch (_) {}
     try {
       await plugin.stopStream();
-    } catch (_) { }
+    } catch (_) {}
   };
 
   const drawNextFrame = async (): Promise<boolean> => {
@@ -121,22 +121,18 @@ export async function getNativeScreenStream(): Promise<{
   //    de manière synchrone avant de retourner le stream à WebRTC.
   //    Sans ça, canvas.captureStream() retourne un stream "vide" et l'offre SDP
   //    n'a pas de vraie track vidéo → le viewer ne reçoit rien.
+  // Warmup — on essaie d'avoir au moins 1 frame mais on ne bloque pas si ça prend trop de temps
+  // Le plugin Android peut mettre jusqu'à 2-3s avant d'avoir le premier JPEG dispo
   console.log('[NativeCapture] Warming up canvas stream...');
   let warmupAttempts = 0;
-  while (framesDrawn < WARMUP_FRAMES && warmupAttempts < 20) {
+  while (framesDrawn < 1 && warmupAttempts < 40) {  // 40 * 150ms = 6s max
     const ok = await drawNextFrame();
-    if (!ok) {
-      // Attendre un peu si le frame n'est pas encore dispo
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    if (!ok) await new Promise((r) => setTimeout(r, 150));
     warmupAttempts++;
   }
 
-  if (framesDrawn === 0) {
-    throw new Error('Impossible de récupérer des frames depuis le plugin natif');
-  }
-
-  console.log(`[NativeCapture] Warmed up with ${framesDrawn} frames. Starting poll interval.`);
+  // On continue même si on n'a pas eu de frame — le setInterval va continuer à essayer
+  console.log(`[NativeCapture] Warmup done: ${framesDrawn} frames in ${warmupAttempts} attempts.`);
 
   // ✅ FIX — requestVideoFrameCallback si dispo, sinon setInterval classique
   //    Certains WebView Android throttlent setInterval en arrière-plan
