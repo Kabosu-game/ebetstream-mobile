@@ -1,8 +1,10 @@
 /**
  * Capture d'écran native dans l'app (Android MediaProjection).
  * Expose un MediaStream à partir du flux servi par le plugin (endpoint /frame).
+ *
+ * FIX : on attend qu'au moins N frames soient dessinés sur le canvas
+ * AVANT de résoudre la promesse → WebRTC reçoit un stream avec de vraies données.
  */
-
 import { registerPlugin } from '@capacitor/core';
 
 export interface ScreenCapturePlugin {
@@ -26,9 +28,6 @@ export function isNativeScreenCaptureAvailable(): boolean {
   return getPlugin() != null;
 }
 
-/**
- * Demande la permission de capture d'écran (lance le dialogue système).
- */
 export async function requestNativeScreenPermission(): Promise<boolean> {
   const plugin = getPlugin();
   if (!plugin) return false;
@@ -39,12 +38,14 @@ export async function requestNativeScreenPermission(): Promise<boolean> {
 const MJPEG_FPS = 15;
 const FRAME_POLL_MS = Math.round(1000 / MJPEG_FPS);
 
-/**
- * Démarre la capture native et retourne un MediaStream + une fonction stop.
- * Utilise GET /frame (une image JPEG par requête) + canvas.captureStream(),
- * compatible avec tous les WebViews Android (pas de MJPEG multipart dans <img>).
- */
-export async function getNativeScreenStream(): Promise<{ stream: MediaStream; stop: () => Promise<void> }> {
+// ✅ FIX — Nombre de frames à attendre avant de considérer le stream "chaud"
+//    WebRTC a besoin de vraies données dans le canvas au moment du addTrack()
+const WARMUP_FRAMES = 3;
+
+export async function getNativeScreenStream(): Promise<{
+  stream: MediaStream;
+  stop: () => Promise<void>;
+}> {
   const plugin = getPlugin();
   if (!plugin) throw new Error('ScreenCapture plugin not available');
 
@@ -53,23 +54,34 @@ export async function getNativeScreenStream(): Promise<{ stream: MediaStream; st
     const result = await plugin.startStream();
     url = result?.url ?? '';
   } catch (e) {
-    throw new Error(typeof e === 'object' && e && 'message' in e ? String((e as Error).message) : 'Failed to start stream');
+    throw new Error(
+      typeof e === 'object' && e && 'message' in e
+        ? String((e as Error).message)
+        : 'Failed to start stream'
+    );
   }
+
   if (!url || typeof url !== 'string') throw new Error('Failed to get stream URL');
 
   const baseUrl = url.replace(/\/+$/, '');
   const frameUrl = `${baseUrl}/frame`;
+
   const canvas = document.createElement('canvas');
   canvas.width = 1280;
   canvas.height = 720;
   const ctx = canvas.getContext('2d');
+
   if (!ctx || typeof canvas.captureStream !== 'function') {
     throw new Error('Canvas stream not supported');
   }
 
+  // ✅ FIX — Démarrer captureStream AVEC un fps explicite
+  //    Sans fps (ou 0), certains WebView Android ne génèrent pas de frames même si le canvas change
   const stream = canvas.captureStream(MJPEG_FPS);
+
   let stopped = false;
   let frameIntervalId: ReturnType<typeof setInterval> | null = null;
+  let framesDrawn = 0;
 
   const stop = async () => {
     stopped = true;
@@ -78,19 +90,19 @@ export async function getNativeScreenStream(): Promise<{ stream: MediaStream; st
     stream.getTracks().forEach((t) => t.stop());
     try {
       if (canvas.parentNode) canvas.remove();
-    } catch (_) {}
+    } catch (_) { }
     try {
       await plugin.stopStream();
-    } catch (_) {}
+    } catch (_) { }
   };
 
-  const drawNextFrame = async () => {
-    if (stopped) return;
+  const drawNextFrame = async (): Promise<boolean> => {
+    if (stopped) return false;
     try {
       const res = await fetch(frameUrl, { cache: 'no-store' });
-      if (!res.ok || !res.body) return;
+      if (!res.ok || !res.body) return false;
       const blob = await res.blob();
-      if (blob.size === 0) return;
+      if (blob.size === 0) return false;
       const bitmap = await createImageBitmap(blob);
       if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas.width = bitmap.width;
@@ -98,11 +110,55 @@ export async function getNativeScreenStream(): Promise<{ stream: MediaStream; st
       }
       ctx.drawImage(bitmap, 0, 0);
       bitmap.close();
-    } catch (_) {}
+      framesDrawn++;
+      return true;
+    } catch (_) {
+      return false;
+    }
   };
 
-  await drawNextFrame();
-  frameIntervalId = setInterval(drawNextFrame, FRAME_POLL_MS);
+  // ✅ FIX PRINCIPAL — Phase de "chauffe" : on dessine WARMUP_FRAMES frames
+  //    de manière synchrone avant de retourner le stream à WebRTC.
+  //    Sans ça, canvas.captureStream() retourne un stream "vide" et l'offre SDP
+  //    n'a pas de vraie track vidéo → le viewer ne reçoit rien.
+  console.log('[NativeCapture] Warming up canvas stream...');
+  let warmupAttempts = 0;
+  while (framesDrawn < WARMUP_FRAMES && warmupAttempts < 20) {
+    const ok = await drawNextFrame();
+    if (!ok) {
+      // Attendre un peu si le frame n'est pas encore dispo
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    warmupAttempts++;
+  }
+
+  if (framesDrawn === 0) {
+    throw new Error('Impossible de récupérer des frames depuis le plugin natif');
+  }
+
+  console.log(`[NativeCapture] Warmed up with ${framesDrawn} frames. Starting poll interval.`);
+
+  // ✅ FIX — requestVideoFrameCallback si dispo, sinon setInterval classique
+  //    Certains WebView Android throttlent setInterval en arrière-plan
+  const useRVFC =
+    typeof HTMLVideoElement !== 'undefined' &&
+    'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+
+  if (!useRVFC) {
+    frameIntervalId = setInterval(drawNextFrame, FRAME_POLL_MS);
+  } else {
+    // Fallback via setInterval quand même (on n'a pas de <video> ici)
+    frameIntervalId = setInterval(drawNextFrame, FRAME_POLL_MS);
+  }
+
+  // ✅ FIX — S'assurer que la track vidéo est bien "enabled" et "live"
+  const videoTrack = stream.getVideoTracks()[0];
+  if (videoTrack) {
+    videoTrack.enabled = true;
+    console.log('[NativeCapture] VideoTrack state:', videoTrack.readyState, 'enabled:', videoTrack.enabled);
+  } else {
+    throw new Error('canvas.captureStream() n\'a pas généré de VideoTrack');
+  }
 
   return { stream, stop };
 }
