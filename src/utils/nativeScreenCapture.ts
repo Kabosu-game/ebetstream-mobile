@@ -90,10 +90,10 @@ export async function getNativeScreenStream(): Promise<{
     stream.getTracks().forEach((t) => t.stop());
     try {
       if (canvas.parentNode) canvas.remove();
-    } catch (_) {}
+    } catch (_) { }
     try {
       await plugin.stopStream();
-    } catch (_) {}
+    } catch (_) { }
   };
 
   const drawNextFrame = async (): Promise<boolean> => {

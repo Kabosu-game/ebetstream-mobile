@@ -497,7 +497,15 @@ const connectSignaling = () => {
   const token = localStorage.getItem('auth_token') || '';
   ws = new WebSocket(`${WS_BASE}/stream/${streamId.value}?token=${encodeURIComponent(token)}`);
 
-  ws.onopen = () => { wsConnected.value = true; };
+  ws.onopen = () => {
+  wsConnected.value = true;
+  // ✅ FIX — Signaler au serveur que le streamer est prêt
+  setTimeout(() => {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'streamer-ready' }));
+    }
+  }, 300);
+};
   ws.onerror = () => { wsConnected.value = false; error.value = 'WebSocket error.'; };
   ws.onclose = () => { wsConnected.value = false; };
 

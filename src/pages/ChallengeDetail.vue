@@ -202,7 +202,8 @@
                               </span>
                             </button>
                             <p class="text-white-50 small mt-2 text-center" style="opacity: 0.8;">
-                              {{ useNativeScreenCapture ? "Partage d'écran natif dans l'app" : "Start a live stream of your challenge gameplay" }}
+                              {{ useNativeScreenCapture ? "Partage d'écran natif dans l'app" : "Start a live stream of
+                              your challenge gameplay" }}
                             </p>
                           </template>
                           <template v-else>
@@ -221,7 +222,6 @@
                               <strong>{{ challenge.is_live_paused ? 'EN PAUSE' : 'LIVE' }}</strong>
                               — {{ challenge.viewer_count || 0 }} viewers
                             </span>
-                            <!-- Statut signal WS -->
                             <span class="badge ms-2" :style="{ background: wsStreamerStatusColor, fontSize: '.7rem' }">
                               {{ wsStreamerStatusLabel }}
                             </span>
@@ -533,7 +533,6 @@ const confirmingStop = ref(false);
 const cancellingStop = ref(false);
 
 const supportsDisplayMedia = typeof navigator.mediaDevices?.getDisplayMedia === "function";
-// Capture d'écran native dans l'app Android via ScreenCaptureService
 const useNativeScreenCapture = true;
 let nativeCaptureStop: (() => Promise<void>) | null = null;
 const isRecording = ref(false);
@@ -562,16 +561,13 @@ const ICE_SERVERS = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
-// ✅ FIX #4 — cleanupSignaling vérifie readyState avant close()
 const cleanupSignaling = () => {
   Object.keys(peerConnections).forEach(closePeer);
   if (signalingWs) {
-    // Neutraliser tous les handlers AVANT de fermer pour éviter les callbacks parasites
     signalingWs.onclose = null;
     signalingWs.onerror = null;
     signalingWs.onmessage = null;
     signalingWs.onopen = null;
-    // ✅ Ne fermer que si pas déjà fermé ou en cours de fermeture
     if (
       signalingWs.readyState !== WebSocket.CLOSED &&
       signalingWs.readyState !== WebSocket.CLOSING
@@ -586,7 +582,6 @@ const cleanupSignaling = () => {
 const connectSignaling = (stream: MediaStream) => {
   if (!challenge.value) return;
 
-  // ✅ Éviter double connexion si déjà OPEN ou CONNECTING
   if (
     signalingWs &&
     (signalingWs.readyState === WebSocket.OPEN ||
@@ -595,7 +590,6 @@ const connectSignaling = (stream: MediaStream) => {
     return;
   }
 
-  // Nettoyer proprement avant de recréer
   cleanupSignaling();
 
   const token = localStorage.getItem('auth_token') || '';
@@ -605,6 +599,12 @@ const connectSignaling = (stream: MediaStream) => {
 
   signalingWs.onopen = () => {
     wsStreamerConnected.value = true;
+    // ✅ FIX — Signaler au serveur que le streamer est prêt à recevoir des viewers
+    setTimeout(() => {
+      if (signalingWs?.readyState === WebSocket.OPEN) {
+        signalingWs.send(JSON.stringify({ type: 'streamer-ready' }));
+      }
+    }, 300);
   };
 
   signalingWs.onerror = () => {
@@ -646,6 +646,9 @@ const connectSignaling = (stream: MediaStream) => {
       case 'viewer-left':
         if (challenge.value) challenge.value.viewer_count = msg.count ?? challenge.value.viewer_count;
         closePeer(msg.viewerId);
+        break;
+      case 'viewer-count':
+        if (challenge.value) challenge.value.viewer_count = msg.count ?? challenge.value.viewer_count;
         break;
     }
   };
@@ -761,7 +764,6 @@ const getWinner = () => {
 };
 
 // ── Stream helpers ────────────────────────────────────────────────────────────
-// Lien public = origine du site web (aligné config), pas capacitor:// pour que les spectateurs puissent ouvrir
 const getPublicStreamUrl = () => {
   if (!challenge.value?.id) return '';
   return `${PUBLIC_APP_ORIGIN}/challenges/${challenge.value.id}/live`;
@@ -809,7 +811,7 @@ const stopViewerCountPolling = () => {
   if (viewerCountInterval) { clearInterval(viewerCountInterval); viewerCountInterval = null; }
 };
 
-// ── Screen Recording (streamer) — partage d'écran (natif ou getDisplayMedia) ───
+// ── Screen Recording ──────────────────────────────────────────────────────────
 const startScreenRecording = async () => {
   if (!challenge.value || !isCreator.value) return;
   try {
@@ -865,14 +867,17 @@ const startScreenRecording = async () => {
       challenge.value.viewer_count = 0;
     }
 
-    stream.getVideoTracks()[0].addEventListener('ended', () => stopScreenRecording());
+    stream.getVideoTracks()[0]?.addEventListener('ended', () => stopScreenRecording());
+
+    // ✅ FIX — Petit délai pour que WebRTC voit bien les frames dans la track
+    await new Promise((r) => setTimeout(r, 500));
 
     connectSignaling(stream);
     startViewerCountPolling();
 
   } catch (err: any) {
     if (nativeCaptureStop) {
-      nativeCaptureStop().catch(() => {});
+      nativeCaptureStop().catch(() => { });
       nativeCaptureStop = null;
     }
     if (screenStream.value) {
@@ -916,7 +921,6 @@ const stopScreenRecording = async () => {
       }
       creatorStreamUrl.value = null;
       stopViewerCountPolling();
-      // ✅ Fermer WS signaling et tous les peers proprement
       cleanupSignaling();
     } else {
       throw new Error(response.data.message || "Failed to stop recording");
@@ -1158,7 +1162,6 @@ onMounted(() => { getCurrentUser(); loadChallenge(); });
 onUnmounted(() => {
   if (messagePollingInterval) clearInterval(messagePollingInterval);
   stopViewerCountPolling();
-  // ✅ Fermer WS signaling et tous les peers proprement
   cleanupSignaling();
   if (screenStream.value) {
     screenStream.value.getTracks().forEach(t => t.stop());
