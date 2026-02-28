@@ -40,36 +40,18 @@ public class ScreenCapturePlugin extends Plugin {
         }
     }
 
-    @PluginMethod
-    public void requestPermission(PluginCall call) {
-        Log.d(SCDBG, "H5: requestPermission start");
-        Activity activity = getActivity();
-        if (activity == null) {
-            call.reject("Activity not available");
-            return;
-        }
-        MediaProjectionManager mgr = (MediaProjectionManager) activity.getSystemService(Activity.MEDIA_PROJECTION_SERVICE);
-        if (mgr == null) {
-            call.reject("MediaProjection not available");
-            return;
-        }
-        Intent intent = null;
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                intent = mgr.createScreenCaptureIntent();
-            }
-        } catch (Throwable t) { /* ignore */ }
-        if (intent == null) {
-            try {
-                java.lang.reflect.Method m = mgr.getClass().getMethod("getScreenCaptureIntent");
-                intent = (Intent) m.invoke(mgr);
-            } catch (Throwable t) {
-                call.reject("Screen capture not available");
-                return;
-            }
-        }
-        startActivityForResult(call, intent, REQUEST_MEDIA_PROJECTION);
-    }
+   @PluginMethod
+public void requestPermission(PluginCall call) {
+    Activity activity = getActivity();
+    if (activity == null) { call.reject("Activity not available"); return; }
+    MediaProjectionManager mgr = (MediaProjectionManager) activity.getSystemService(Activity.MEDIA_PROJECTION_SERVICE);
+    if (mgr == null) { call.reject("MediaProjection not available"); return; }
+    
+    // ✅ FIX — createScreenCaptureIntent() disponible depuis Android 5 (API 21)
+    // Pas besoin de réflexion, cette méthode existe depuis le début de MediaProjection
+    Intent intent = mgr.createScreenCaptureIntent();
+    startActivityForResult(call, intent, REQUEST_MEDIA_PROJECTION);
+}
 
     @PluginMethod
     public void startStream(PluginCall call) {

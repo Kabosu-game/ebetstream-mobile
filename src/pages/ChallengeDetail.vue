@@ -202,8 +202,7 @@
                               </span>
                             </button>
                             <p class="text-white-50 small mt-2 text-center" style="opacity: 0.8;">
-                              {{ useNativeScreenCapture ? "Partage d'écran natif dans l'app" : "Start a live stream of
-                              your challenge gameplay" }}
+                              {{ useNativeScreenCapture ? "Partage d'écran natif dans l'app" : "Start a live stream of your challenge gameplay" }}
                             </p>
                           </template>
                           <template v-else>

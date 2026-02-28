@@ -96,27 +96,30 @@ export async function getNativeScreenStream(): Promise<{
     } catch (_) { }
   };
 
-  const drawNextFrame = async (): Promise<boolean> => {
-    if (stopped) return false;
-    try {
-      const res = await fetch(frameUrl, { cache: 'no-store' });
-      if (!res.ok || !res.body) return false;
-      const blob = await res.blob();
-      if (blob.size === 0) return false;
-      const bitmap = await createImageBitmap(blob);
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-      }
-      ctx.drawImage(bitmap, 0, 0);
-      bitmap.close();
-      framesDrawn++;
-      return true;
-    } catch (_) {
-      return false;
-    }
-  };
-
+const drawNextFrame = async (): Promise<boolean> => {
+  if (stopped) return false;
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', frameUrl, true);
+    xhr.responseType = 'blob';
+    xhr.onload = async () => {
+      if (xhr.status !== 200 || !xhr.response || xhr.response.size === 0) { resolve(false); return; }
+      try {
+        const bitmap = await createImageBitmap(xhr.response);
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        framesDrawn++;
+        resolve(true);
+      } catch { resolve(false); }
+    };
+    xhr.onerror = () => resolve(false);
+    xhr.send();
+  });
+};
   // ✅ FIX PRINCIPAL — Phase de "chauffe" : on dessine WARMUP_FRAMES frames
   //    de manière synchrone avant de retourner le stream à WebRTC.
   //    Sans ça, canvas.captureStream() retourne un stream "vide" et l'offre SDP
