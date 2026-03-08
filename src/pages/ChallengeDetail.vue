@@ -810,13 +810,11 @@ const stopViewerCountPolling = () => {
   if (viewerCountInterval) { clearInterval(viewerCountInterval); viewerCountInterval = null; }
 };
 
-// ── Screen Recording ──────────────────────────────────────────────────────────
 const startScreenRecording = async () => {
   if (!challenge.value || !isCreator.value) return;
   try {
     startingRecording.value = true;
     recordingError.value = "";
-
     let stream: MediaStream;
 
     if (useNativeScreenCapture) {
@@ -848,7 +846,6 @@ const startScreenRecording = async () => {
     }
 
     screenStream.value = stream;
-
     await nextTick();
     if (localVideoEl.value) {
       localVideoEl.value.srcObject = stream;
@@ -868,9 +865,15 @@ const startScreenRecording = async () => {
 
     stream.getVideoTracks()[0]?.addEventListener('ended', () => stopScreenRecording());
 
-    // ✅ FIX — Petit délai pour que WebRTC voit bien les frames dans la track
-    await new Promise((r) => setTimeout(r, 500));
+    // DEBUG
+    const token = localStorage.getItem('auth_token');
+    const wsUrl = `${WS_BASE}/stream/${challenge.value.id}?token=${encodeURIComponent(token || '')}`;
+    console.log('[DEBUG] token:', token ? 'PRESENT (' + token.substring(0, 20) + '...)' : 'VIDE');
+    console.log('[DEBUG] WS_BASE:', WS_BASE);
+    console.log('[DEBUG] WS URL:', wsUrl);
+    console.log('[DEBUG] stream tracks:', stream.getTracks().map(t => t.kind + ':' + t.readyState));
 
+    await new Promise((r) => setTimeout(r, 500));
     connectSignaling(stream);
     startViewerCountPolling();
 
@@ -881,7 +884,7 @@ const startScreenRecording = async () => {
     }
     if (screenStream.value) {
       screenStream.value.getTracks().forEach(t => t.stop());
-      screenStream.value = null;
+      screenStream.value = null;   
     }
     const apiMsg = err.response?.data?.message;
     recordingError.value = apiMsg || (err.name === 'NotAllowedError'
@@ -890,7 +893,7 @@ const startScreenRecording = async () => {
   } finally {
     startingRecording.value = false;
   }
-};
+};  
 
 const stopScreenRecording = async () => {
   if (!challenge.value) return;
